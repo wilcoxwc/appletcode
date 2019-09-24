@@ -1,0 +1,121 @@
+<html>
+  <head>
+    <script src="https://libs.glia.com/axon.js"></script>
+  </head>
+
+  <body>
+    Visitor's data from Salesforce: <span id="salesforce-data">...</span>
+    <script>
+      // Axon API usage script
+
+      // Connected App Information
+      const clientId = '3MVG98dostKihXN7ptNGTFvsls8Rwws0FC3FkTBMxE9ZNz3N1GJEB2xsvzD4BX.XPf8bInv38ila3lfAW4B5s';
+      const redirectURI = 'https://app.glia.com';
+
+      // Salesforce organization domain
+      const orgDomain = 'glia--cortex.cs1.my.salesforce.com';
+
+      // Function which requests Lead data from Salesforce given the `externalId` of the Visitor
+      // and an access token. Returns a Promise which resolves with JSON object representation of
+      // the Lead
+      function requestLeadData({externalId, accessToken}) {
+        return new Promise((resolve, reject) => {
+          const url = `https://${orgDomain}.my.salesforce.com/services/data/v39.0/sobjects/Contact/${externalId}`;
+          const params = {
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${accessToken}`
+            },
+            method: 'GET'
+          }
+          fetch(url, params)
+            .then(data => {
+              return data.json();
+            })
+            .then(json => {
+              resolve(json);
+            })
+            .catch(error => {
+              reject(error);
+            })
+        });
+      }
+
+      // SF OAuth process to obtain the access token
+      // This function returns a Promise that resolves with the access token
+      // once it has been received
+      function getAccessToken() {
+        const authWindow = window.open(
+          'https://login.salesforce.com/services/oauth2/authorize?' + 
+          'response_type=token&' +
+          'display=popup&' +
+          `client_id=${clientId}&` +
+          `redirect_uri=${redirectURI}`,
+          'Salesforce Authorization',
+          "width=500,height=800"
+        )
+
+        return new Promise(resolve => {
+          function resolveWithAccessToken(event) {
+            let message;
+            try {
+              message = JSON.parse(event.data);
+              // The web application at the `redirectURI` will `postMessage` the
+              // authentication token
+              if (message.type === 'AUTH_TOKEN') {
+                authWindow.close();
+                const token = message.payload;
+                window.removeEventListener('message', resolveWithAccessToken);
+                resolve(token);
+              }
+            } catch (e) {
+              return;
+            }
+          }
+          window.addEventListener('message', resolveWithAccessToken);
+        });
+      }
+
+      // Function that renders the Salesforce Lead data
+      function useSalesforceLeadData(data) {
+        document.getElementById('salesforce-data').innerHTML = JSON.stringify(data, null, 2);
+      }
+
+      window.getGliaApi({version: 'v1'}).then(glia => {
+        glia.addBufferedEventListener(glia.EVENTS.VISITOR_STATE, async visitor => {
+          // Use the Glia API to fetch a previously stored access token. The value will resolve
+          // as `null` if no data with key `sf_access_token` has previously been set.
+          const accessTokenFromStorage = await glia.getAxonData({key: 'sf_access_token'});
+          const externalId = visitor.customAttributes.external_id;
+          // Function that retrieves a new access token, stores the token in Axon storage
+          // and fetches Lead data using the token
+          function authenticateAndRequest() {
+            getAccessToken().then(accessToken => {
+              glia.storeAxonData({key: 'sf_access_token', data: accessToken});
+              requestLeadData({externalId, accessToken})
+                .then(useSalesforceLeadData);
+            });
+          }
+          // Check whether the Visitor has an `externalId` custom attribute
+          if (externalId) {
+            // If an access token has been stored by a prior instance of the same Axon
+            // then attempt the request using the token
+            if (accessTokenFromStorage) {
+              requestLeadData({externalId, accessToken: accessTokenFromStorage})
+                .then(useSalesforceLeadData)
+                .catch(() => {
+                  // If the request failed using the stored access token, retrieve a new
+                  // token by going through the Salesforce OAuth process
+                  authenticateAndRequest();
+                });
+            } else {
+              // If no token was stored previously, retrieve a new token by going through
+              // the Salesforce OAuth process
+              authenticateAndRequest();
+            }
+          }
+        });
+      });
+    </script>
+  </body>
+</html>
